@@ -104,6 +104,10 @@ void app_main(void)
         return;
     }
 
+    // Start with VFS mounted (drive hidden from USB host) until state machine
+    // explicitly exposes it after WiFi + MQTT are connected.
+    usb_msc_mount_for_sync();
+
     // 5. Start state machine (creates event queue + task)
     state_machine_init();
 
