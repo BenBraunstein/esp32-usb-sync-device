@@ -3,9 +3,9 @@ name: Build and Push Docker Image
 on:
   push:
     branches: [main]
-    # paths:
-    #   - "manifest_server/**"
-    #   - ".github/workflows/docker-publish.yml"
+    paths:
+      - "manifest_server/**"
+      - ".github/workflows/docker-publish.yml"
 
 env:
   IMAGE_NAME: embroidery-manifest-server

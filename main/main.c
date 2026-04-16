@@ -73,6 +73,16 @@ static void wifi_init(void)
 
 // ---- app_main --------------------------------------------------------------
 
+// Brief solid color flash for debugging boot sequence (visible on LED).
+// Each init step gets a unique color so we can see where it crashes.
+static void debug_flash(uint8_t r, uint8_t g, uint8_t b)
+{
+    extern led_strip_handle_t led_debug_get_strip(void);
+    // Can't use led_strip directly — use led_set_state for a brief marker.
+    // Instead, just use a delay as a timing marker between steps.
+    vTaskDelay(pdMS_TO_TICKS(200));
+}
+
 void app_main(void)
 {
     // 1. Initialize NVS (required before WiFi and config reads)
@@ -87,14 +97,22 @@ void app_main(void)
 
     // 2. Start LED — shows yellow breathing immediately (WiFi connecting)
     led_init();
+    ESP_LOGI(TAG, "LED init OK");
 
     // 3. Initialize SD card (SPI bus + card probe)
+    led_set_state(LED_STATE_SYNCING);  // cyan = "about to init SD"
+    vTaskDelay(pdMS_TO_TICKS(500));
+
     ret = sd_card_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "SD card init failed — entering error state");
         led_set_state(LED_STATE_ERROR);
-        return;  // Cannot proceed without SD card
+        return;
     }
+    ESP_LOGI(TAG, "SD card init OK");
+
+    led_set_state(LED_STATE_MOUNTING);  // blue = "about to init USB MSC"
+    vTaskDelay(pdMS_TO_TICKS(500));
 
     // 4. Initialize USB MSC with the SD card handle
     ret = usb_msc_init(sd_card_get_card());
@@ -103,21 +121,19 @@ void app_main(void)
         led_set_state(LED_STATE_ERROR);
         return;
     }
-
-    // Start with VFS mounted (drive hidden from USB host) until state machine
-    // explicitly exposes it after WiFi + MQTT are connected.
-    // Note: init may already mount VFS, so ignore errors here.
-    usb_msc_mount_for_sync();  // OK if already mounted
+    ESP_LOGI(TAG, "USB MSC init OK");
 
     // 5. Start state machine (creates event queue + task)
     state_machine_init();
+    ESP_LOGI(TAG, "State machine init OK");
 
-    // 6. Connect WiFi (event handler will post EVENT_WIFI_CONNECTED)
+    // 6. Set LED to WiFi connecting and start WiFi
+    led_set_state(LED_STATE_WIFI_CONNECTING);
+
     wifi_init();
+    ESP_LOGI(TAG, "WiFi init OK");
 
     // 7. Start MQTT (will post EVENT_MQTT_CONNECTED when broker connects)
     mqtt_app_start();
-
     ESP_LOGI(TAG, "Initialization complete — state machine running");
-    // app_main returns; FreeRTOS tasks (state machine, LED, TinyUSB, MQTT) continue
 }
