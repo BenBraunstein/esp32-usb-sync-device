@@ -111,5 +111,10 @@ esp_err_t usb_msc_expose_to_host(void)
 esp_err_t usb_msc_mount_for_sync(void)
 {
     ESP_LOGI(TAG, "Mounting VFS for sync access");
-    return tinyusb_msc_storage_mount(SD_MOUNT_POINT);
+    esp_err_t ret = tinyusb_msc_storage_mount(SD_MOUNT_POINT);
+    if (ret != ESP_OK) {
+        // May already be mounted (e.g. after init) — not fatal
+        ESP_LOGW(TAG, "VFS mount returned %s (may already be mounted)", esp_err_to_name(ret));
+    }
+    return ESP_OK;
 }
