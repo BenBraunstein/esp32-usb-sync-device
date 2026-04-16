@@ -1,0 +1,82 @@
+#pragma once
+
+// ---------------------------------------------------------------------------
+// GPIO Pin Assignments — hardware-specific, not overridable via .env
+// ---------------------------------------------------------------------------
+
+// SD Card (SPI)
+#define PIN_SD_MOSI     11
+#define PIN_SD_MISO     13
+#define PIN_SD_SCK      12
+#define PIN_SD_CS       10
+
+// WS2812 onboard LED (GPIO 48 on ESP32-S3 Super Mini)
+#define PIN_LED         48
+
+// USB OTG (TinyUSB) — hardware-fixed on ESP32-S3 Super Mini
+#define PIN_USB_DN      19
+#define PIN_USB_DP      20
+
+// ---------------------------------------------------------------------------
+// Credentials — overridden by .env compile definitions via #ifndef guards.
+// If no .env exists, these placeholders are used (WiFi will fail to connect,
+// which is obvious from the serial log and yellow LED staying on).
+// ---------------------------------------------------------------------------
+
+#ifndef WIFI_SSID
+#define WIFI_SSID           "YOUR_SSID_HERE"
+#endif
+
+#ifndef WIFI_PASSWORD
+#define WIFI_PASSWORD       "YOUR_WIFI_PASSWORD_HERE"
+#endif
+
+#ifndef MQTT_BROKER_IP
+#define MQTT_BROKER_IP      "192.168.1.100"
+#endif
+
+#ifndef MQTT_BROKER_PORT
+#define MQTT_BROKER_PORT    "1883"
+#endif
+
+#ifndef MQTT_USERNAME
+#define MQTT_USERNAME       "YOUR_MQTT_USERNAME_HERE"
+#endif
+
+#ifndef MQTT_PASSWORD
+#define MQTT_PASSWORD       "YOUR_MQTT_PASSWORD_HERE"
+#endif
+
+#ifndef UNRAID_IP
+#define UNRAID_IP           "192.168.1.50"
+#endif
+
+#ifndef UNRAID_PORT
+#define UNRAID_PORT         "8765"
+#endif
+
+// ---------------------------------------------------------------------------
+// MQTT
+// ---------------------------------------------------------------------------
+#define MQTT_CLIENT_ID      "embroidery-sync-device"
+#define MQTT_TOPIC_SYNC     "embroidery/sync"
+#define MQTT_TOPIC_FORCE    "embroidery/force_sync"
+#define MQTT_TOPIC_STATUS   "embroidery/status"
+
+// ---------------------------------------------------------------------------
+// Sync Behavior
+// ---------------------------------------------------------------------------
+#define MAX_RETRY_COUNT     3
+#define RETRY_DELAY_MS      10000
+#define SYNC_DEBOUNCE_MS    2000
+
+// ---------------------------------------------------------------------------
+// SD Card
+// ---------------------------------------------------------------------------
+#define SD_MOUNT_POINT      "/sdcard"
+
+// ---------------------------------------------------------------------------
+// LED Brightness
+// ---------------------------------------------------------------------------
+#define LED_BRIGHTNESS_IDLE 76      // 30% of 255
+#define LED_BRIGHTNESS_MAX  255

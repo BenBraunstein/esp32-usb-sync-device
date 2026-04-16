@@ -1,0 +1,12 @@
+services:
+  embroidery-manifest:
+    build: .
+    image: embroidery-manifest-server:latest
+    ports:
+      - "8765:8765"
+    volumes:
+      # Mount your Unraid embroidery share here (read-only)
+      - /mnt/user/embroidery:/data:ro
+    environment:
+      - EMBROIDERY_ROOT=/data
+    restart: unless-stopped
