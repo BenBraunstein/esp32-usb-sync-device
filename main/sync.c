@@ -10,35 +10,94 @@
 #include <sys/stat.h>
 #include <sys/unistd.h>
 #include <errno.h>
+#include <ctype.h>
 
 static const char *TAG = "sync";
 
 #define HTTP_BUF_SIZE   4096
 #define MANIFEST_MAX    (64 * 1024)  // 64 KB max manifest size
 
+// URL-encode a path component. Spaces become %20, other unsafe chars are encoded.
+// Slashes are preserved (they're path separators, not encoded).
+// Returns number of bytes written (excluding null terminator), or -1 if buffer too small.
+static int url_encode_path(const char *src, char *dst, size_t dst_size)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    size_t di = 0;
+
+    for (const char *s = src; *s; s++) {
+        unsigned char c = (unsigned char)*s;
+        if (isalnum(c) || c == '/' || c == '-' || c == '_' || c == '.' || c == '~') {
+            if (di + 1 >= dst_size) return -1;
+            dst[di++] = c;
+        } else {
+            if (di + 3 >= dst_size) return -1;
+            dst[di++] = '%';
+            dst[di++] = hex[c >> 4];
+            dst[di++] = hex[c & 0x0F];
+        }
+    }
+    if (di >= dst_size) return -1;
+    dst[di] = '\0';
+    return (int)di;
+}
+
 // ---- helpers ---------------------------------------------------------------
 
 // Recursively create directories for a file path.
-// Given "/sdcard/designs/sub/file.pes", creates /sdcard/designs/ and /sdcard/designs/sub/.
-static void mkdir_p(const char *filepath)
+// Given "/sdcard/Boutique Orders/10 8 25/file.pes", creates each directory level.
+static esp_err_t mkdir_p(const char *filepath)
 {
-    char tmp[256];
-    strncpy(tmp, filepath, sizeof(tmp) - 1);
-    tmp[sizeof(tmp) - 1] = '\0';
+    const char *last_slash = strrchr(filepath, '/');
+    if (!last_slash || last_slash == filepath) {
+        return ESP_OK;
+    }
 
-    // Walk past the mount point prefix
-    char *p = tmp + strlen(SD_MOUNT_POINT) + 1;
-    for (; *p; p++) {
-        if (*p == '/') {
-            *p = '\0';
-            mkdir(tmp, 0755);  // ignore EEXIST
-            *p = '/';
+    size_t dir_len = last_slash - filepath;
+    char dir_path[512];
+    if (dir_len >= sizeof(dir_path)) {
+        ESP_LOGE(TAG, "Directory path too long: %zu", dir_len);
+        return ESP_FAIL;
+    }
+    memcpy(dir_path, filepath, dir_len);
+    dir_path[dir_len] = '\0';
+
+    size_t mount_len = strlen(SD_MOUNT_POINT);
+    if (dir_len <= mount_len) {
+        return ESP_OK;
+    }
+
+    // Try creating the full directory path first (works if parent exists)
+    if (mkdir(dir_path, 0755) == 0 || errno == EEXIST) {
+        return ESP_OK;
+    }
+
+    // Full path failed — create each level one at a time
+    for (size_t i = mount_len + 1; i <= dir_len; i++) {
+        if (i == dir_len || dir_path[i] == '/') {
+            char saved = dir_path[i];
+            dir_path[i] = '\0';
+
+            struct stat dst;
+            if (stat(dir_path, &dst) == 0) {
+                dir_path[i] = saved;
+                continue;
+            }
+
+            int ret = mkdir(dir_path, 0755);
+            if (ret != 0 && errno != EEXIST) {
+                ESP_LOGE(TAG, "mkdir failed: '%s' errno=%d", dir_path, errno);
+                dir_path[i] = saved;
+                return ESP_FAIL;
+            }
+
+            dir_path[i] = saved;
         }
     }
+    return ESP_OK;
 }
 
 // HTTP GET into a heap buffer. Caller must free() the returned pointer.
-// Returns NULL on failure. *out_len receives the body length.
 static char *http_get_to_buffer(const char *url, int *out_len, int max_len)
 {
     esp_http_client_config_t config = {
@@ -64,7 +123,6 @@ static char *http_get_to_buffer(const char *url, int *out_len, int max_len)
         return NULL;
     }
 
-    // Allocate buffer — use content_length if known, otherwise grow dynamically
     int alloc_size = (content_length > 0 && content_length < max_len)
                      ? content_length + 1
                      : max_len;
@@ -117,15 +175,17 @@ static esp_err_t http_get_to_file(const char *url, const char *filepath)
         return ESP_FAIL;
     }
 
-    // Write to .tmp file for atomic rename
-    char tmp_path[280];
-    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", filepath);
+    if (mkdir_p(filepath) != ESP_OK) {
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return ESP_FAIL;
+    }
 
-    mkdir_p(filepath);
+    unlink(filepath);
 
-    FILE *fp = fopen(tmp_path, "wb");
+    FILE *fp = fopen(filepath, "wb");
     if (!fp) {
-        ESP_LOGE(TAG, "Failed to open %s for writing: %s", tmp_path, strerror(errno));
+        ESP_LOGE(TAG, "Failed to open %s for writing: %s", filepath, strerror(errno));
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
         return ESP_FAIL;
@@ -134,7 +194,7 @@ static esp_err_t http_get_to_file(const char *url, const char *filepath)
     char *buf = malloc(HTTP_BUF_SIZE);
     if (!buf) {
         fclose(fp);
-        unlink(tmp_path);
+        unlink(filepath);
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
         return ESP_ERR_NO_MEM;
@@ -144,7 +204,7 @@ static esp_err_t http_get_to_file(const char *url, const char *filepath)
     esp_err_t result = ESP_OK;
     while ((len = esp_http_client_read(client, buf, HTTP_BUF_SIZE)) > 0) {
         if (fwrite(buf, 1, len, fp) != (size_t)len) {
-            ESP_LOGE(TAG, "Write error for %s", tmp_path);
+            ESP_LOGE(TAG, "Write error for %s", filepath);
             result = ESP_FAIL;
             break;
         }
@@ -156,14 +216,7 @@ static esp_err_t http_get_to_file(const char *url, const char *filepath)
     esp_http_client_cleanup(client);
 
     if (result != ESP_OK || len < 0) {
-        unlink(tmp_path);
-        return ESP_FAIL;
-    }
-
-    // Atomic rename
-    if (rename(tmp_path, filepath) != 0) {
-        ESP_LOGE(TAG, "Rename %s -> %s failed: %s", tmp_path, filepath, strerror(errno));
-        unlink(tmp_path);
+        unlink(filepath);
         return ESP_FAIL;
     }
 
@@ -174,6 +227,14 @@ static esp_err_t http_get_to_file(const char *url, const char *filepath)
 
 esp_err_t sync_run(void)
 {
+    // Verify VFS mount point is accessible
+    struct stat mount_st;
+    if (stat(SD_MOUNT_POINT, &mount_st) != 0) {
+        ESP_LOGE(TAG, "Mount point %s not accessible (errno=%d)", SD_MOUNT_POINT, errno);
+        mqtt_publish_status("error: SD card not accessible");
+        return ESP_FAIL;
+    }
+
     char server_ip[64];
     char server_port[8];
     nvs_config_get_str("unraid_ip",   UNRAID_IP,   server_ip,   sizeof(server_ip));
@@ -190,6 +251,7 @@ esp_err_t sync_run(void)
     char *manifest_json = http_get_to_buffer(manifest_url, &manifest_len, MANIFEST_MAX);
     if (!manifest_json) {
         ESP_LOGE(TAG, "Failed to fetch manifest");
+        mqtt_publish_status("error: manifest fetch failed");
         return ESP_FAIL;
     }
 
@@ -198,6 +260,7 @@ esp_err_t sync_run(void)
     free(manifest_json);
     if (!root || !cJSON_IsArray(root)) {
         ESP_LOGE(TAG, "Invalid manifest JSON");
+        mqtt_publish_status("error: invalid manifest");
         if (root) cJSON_Delete(root);
         return ESP_FAIL;
     }
@@ -234,10 +297,17 @@ esp_err_t sync_run(void)
             continue;
         }
 
-        // Download needed
-        char file_url[384];
+        // Download needed — URL-encode the path to handle spaces and special chars
+        char encoded_path[512];
+        if (url_encode_path(rel_path, encoded_path, sizeof(encoded_path)) < 0) {
+            ESP_LOGE(TAG, "Path too long to encode: %s", rel_path);
+            errors++;
+            continue;
+        }
+
+        char file_url[640];
         snprintf(file_url, sizeof(file_url),
-                 "http://%s:%s/files/%s", server_ip, server_port, rel_path);
+                 "http://%s:%s/files/%s", server_ip, server_port, encoded_path);
 
         ESP_LOGI(TAG, "Downloading: %s (%zu bytes)", rel_path, expected_size);
 
@@ -247,6 +317,11 @@ esp_err_t sync_run(void)
         } else {
             ESP_LOGE(TAG, "Failed to download %s", rel_path);
             errors++;
+            // Stop after 3 errors to keep output manageable
+            if (errors >= 3) {
+                ESP_LOGW(TAG, "Stopping sync early after %d errors", errors);
+                break;
+            }
         }
     }
 

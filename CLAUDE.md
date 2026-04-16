@@ -54,7 +54,7 @@ FreeRTOS task (`led_task`) so they never block the main state machine.
 | State                      | Color (RGB)           | Pattern                             | Description                          |
 | -------------------------- | --------------------- | ----------------------------------- | ------------------------------------ |
 | WiFi connecting            | Yellow (255, 180, 0)  | Slow breathing, 2s cycle            | Waking up, not yet online            |
-| MQTT connecting            | Orange (255, 80, 0)   | Slow breathing, 2s cycle            | WiFi up, broker connecting           |
+| MQTT connecting            | Purple (180, 0, 255)  | Slow breathing, 2s cycle            | WiFi up, broker connecting           |
 | Mounting                   | Blue (0, 80, 255)     | Fast pulse, 3 blinks/sec            | Initializing USB MSC                 |
 | Mounted, idle              | Green (0, 200, 0)     | Solid, 30% brightness               | Ready, drive visible to machine      |
 | Mounted, machine accessing | Green (0, 255, 0)     | Rapid random flicker                | Drive activity (read/write by PE900) |

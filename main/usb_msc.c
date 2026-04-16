@@ -1,9 +1,17 @@
 #include "usb_msc.h"
+#include "sd_card.h"
 #include "config.h"
 #include "state_machine.h"
+#include "app_mqtt.h"
 #include "esp_log.h"
+#include "esp_vfs_fat.h"
 #include "tinyusb.h"
 #include "tusb_msc_storage.h"
+#include <string.h>
+#include <errno.h>
+#include <sys/unistd.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "usb_msc";
 
@@ -12,11 +20,9 @@ static const char *TAG = "usb_msc";
 static void mount_changed_cb(tinyusb_msc_event_t *event)
 {
     if (event->mount_changed_data.is_mounted) {
-        // VFS mounted → app (sync) has file access
         ESP_LOGI(TAG, "VFS mounted (available for sync)");
         state_machine_post_event(EVENT_UNMOUNT_COMPLETE);
     } else {
-        // VFS unmounted → USB host has the drive
         ESP_LOGI(TAG, "VFS unmounted (USB host has drive)");
         state_machine_post_event(EVENT_MOUNT_COMPLETE);
     }
@@ -67,14 +73,13 @@ static const char *s_string_desc[] = {
 
 esp_err_t usb_msc_init(sdmmc_card_t *card)
 {
-    // 1. Register the SD card as MSC backing storage
     const tinyusb_msc_sdmmc_config_t sdmmc_config = {
         .card = card,
         .callback_mount_changed = mount_changed_cb,
         .mount_config = {
             .max_files = 5,
             .format_if_mount_failed = true,
-            .allocation_unit_size = 0, // default
+            .allocation_unit_size = 0,
         },
     };
 
@@ -84,7 +89,6 @@ esp_err_t usb_msc_init(sdmmc_card_t *card)
         return ret;
     }
 
-    // 2. Install the TinyUSB driver with our descriptors
     const tinyusb_config_t tusb_cfg = {
         .device_descriptor = &s_device_desc,
         .string_descriptor = s_string_desc,
@@ -105,16 +109,30 @@ esp_err_t usb_msc_init(sdmmc_card_t *card)
 esp_err_t usb_msc_expose_to_host(void)
 {
     ESP_LOGI(TAG, "Exposing SD card to USB host");
-    return tinyusb_msc_storage_unmount();
+    esp_err_t ret = tinyusb_msc_storage_unmount();
+    if (tinyusb_msc_storage_in_use_by_usb_host()) {
+        ESP_LOGI(TAG, "Already exposed to USB host, posting MOUNT_COMPLETE");
+        state_machine_post_event(EVENT_MOUNT_COMPLETE);
+    }
+    return ret;
 }
 
 esp_err_t usb_msc_mount_for_sync(void)
 {
     ESP_LOGI(TAG, "Mounting VFS for sync access");
+
     esp_err_t ret = tinyusb_msc_storage_mount(SD_MOUNT_POINT);
     if (ret != ESP_OK) {
-        // May already be mounted (e.g. after init) — not fatal
-        ESP_LOGW(TAG, "VFS mount returned %s (may already be mounted)", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "VFS mount failed: %s", esp_err_to_name(ret));
     }
+
+    state_machine_post_event(EVENT_UNMOUNT_COMPLETE);
+    return ret;
+}
+
+esp_err_t usb_msc_unmount_sync(void)
+{
+    ESP_LOGI(TAG, "Unmounting SD card VFS after sync");
+    tinyusb_msc_storage_unmount();
     return ESP_OK;
 }

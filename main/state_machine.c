@@ -4,6 +4,7 @@
 #include "app_mqtt.h"
 #include "usb_msc.h"
 #include "sync.h"
+#include "tusb_msc_storage.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -128,15 +129,9 @@ static void handle_event(state_event_t event)
         break;
 
     case STATE_MOUNTED:
-        if (event == EVENT_SYNC_REQUESTED) {
+        if (event == EVENT_SYNC_REQUESTED || event == EVENT_FORCE_SYNC) {
             s_pending_sync = true;
-            led_set_state(LED_STATE_PENDING_SYNC);
-            // Start debounce timer — actual unmount happens when it fires
-            xTimerReset(s_debounce_timer, 0);
-        }
-        if (event == EVENT_FORCE_SYNC) {
-            s_pending_sync = true;
-            // Force sync skips debounce — unmount immediately
+            // Unmount from USB host and mount VFS for sync immediately
             enter_state(STATE_UNMOUNTING);
             usb_msc_mount_for_sync();
         }
@@ -160,8 +155,9 @@ static void handle_event(state_event_t event)
             s_pending_sync = false;
             s_retry_count = 0;
             led_set_state(LED_STATE_SYNC_COMPLETE);
-            // Brief LED flash, then re-mount for USB host
             vTaskDelay(pdMS_TO_TICKS(350));
+            // Unmount the direct SD card VFS before re-exposing to USB host
+            usb_msc_unmount_sync();
             enter_state(STATE_MOUNTING);
             usb_msc_expose_to_host();
         }
@@ -171,8 +167,11 @@ static void handle_event(state_event_t event)
                 char msg[64];
                 snprintf(msg, sizeof(msg), "error: sync failed after %d retries", MAX_RETRY_COUNT);
                 mqtt_publish_status(msg);
-                enter_state(STATE_ERROR);
-                xTimerStart(s_retry_timer, 0);
+                s_pending_sync = false;
+                s_retry_count = 0;
+                usb_msc_unmount_sync();
+                enter_state(STATE_MOUNTING);
+                usb_msc_expose_to_host();
             } else {
                 ESP_LOGW(TAG, "Sync failed, retry %d/%d in %d ms",
                          s_retry_count, MAX_RETRY_COUNT, RETRY_DELAY_MS);
@@ -183,8 +182,15 @@ static void handle_event(state_event_t event)
         break;
 
     case STATE_ERROR:
-        // Retry timer posts SYNC_REQUESTED, which we handle here
+        // Retry timer posts SYNC_REQUESTED — VFS should still be mounted from
+        // the previous sync attempt, so we can retry directly.
         if (event == EVENT_SYNC_REQUESTED) {
+            // Re-mount VFS in case it was lost (idempotent if already mounted)
+            esp_err_t mount_err = tinyusb_msc_storage_mount(SD_MOUNT_POINT);
+            if (mount_err != ESP_OK) {
+                ESP_LOGW(TAG, "VFS re-mount returned %s (may already be mounted)",
+                         esp_err_to_name(mount_err));
+            }
             enter_state(STATE_SYNCING);
             esp_err_t err = sync_run();
             if (err == ESP_OK) {
@@ -200,6 +206,17 @@ static void handle_event(state_event_t event)
             vTaskDelay(pdMS_TO_TICKS(350));
             enter_state(STATE_MOUNTING);
             usb_msc_expose_to_host();
+        }
+        // Allow force_sync from error state too
+        if (event == EVENT_FORCE_SYNC) {
+            s_retry_count = 0;
+            enter_state(STATE_SYNCING);
+            esp_err_t err = sync_run();
+            if (err == ESP_OK) {
+                state_machine_post_event(EVENT_SYNC_COMPLETE);
+            } else {
+                state_machine_post_event(EVENT_SYNC_FAILED);
+            }
         }
         break;
     }
@@ -229,7 +246,7 @@ void state_machine_init(void)
     s_debounce_timer = xTimerCreate("debounce", pdMS_TO_TICKS(SYNC_DEBOUNCE_MS),
                                     pdFALSE, NULL, debounce_timer_cb);
 
-    xTaskCreate(state_machine_task, "state_machine", 4096, NULL, 5, NULL);
+    xTaskCreate(state_machine_task, "state_machine", 16384, NULL, 5, NULL);
     ESP_LOGI(TAG, "State machine started");
 }
 

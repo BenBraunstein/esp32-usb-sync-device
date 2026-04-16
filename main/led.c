@@ -13,6 +13,7 @@ static const char *TAG = "led";
 static led_strip_handle_t s_strip;
 static _Atomic led_state_t s_state = LED_STATE_WIFI_CONNECTING;
 static int64_t s_state_entry_us;
+static _Atomic int s_paused = 0;  // when non-zero, led_task skips updates
 
 // ---- helpers ---------------------------------------------------------------
 
@@ -104,6 +105,12 @@ static void led_task(void *arg)
     s_state_entry_us = esp_timer_get_time();
 
     while (1) {
+        // If paused (debug_flash is using the strip), skip updates
+        if (atomic_load(&s_paused)) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+
         led_state_t state = atomic_load(&s_state);
 
         // Reset entry timestamp on state change
@@ -121,8 +128,8 @@ static void led_task(void *arg)
             break;
 
         case LED_STATE_MQTT_CONNECTING:
-            // Orange breathing, 2s cycle
-            pattern_breathing(elapsed, 2000, 255, 80, 0);
+            // Purple breathing, 2s cycle (distinct from yellow WiFi)
+            pattern_breathing(elapsed, 2000, 180, 0, 255);
             break;
 
         case LED_STATE_MOUNTING:
@@ -198,4 +205,21 @@ void led_init(void)
 void led_set_state(led_state_t state)
 {
     atomic_store(&s_state, state);
+}
+
+led_strip_handle_t led_debug_get_strip(void)
+{
+    return s_strip;
+}
+
+void led_pause(void)
+{
+    atomic_store(&s_paused, 1);
+    // Give led_task time to finish any in-progress RMT transaction
+    vTaskDelay(pdMS_TO_TICKS(40));
+}
+
+void led_resume(void)
+{
+    atomic_store(&s_paused, 0);
 }

@@ -18,7 +18,7 @@ def manifest():
         raise HTTPException(status_code=500, detail=f"Root directory not found: {ROOT_DIR}")
 
     entries = []
-    for filepath in sorted(ROOT_DIR.rglob("*")):
+    for filepath in ROOT_DIR.rglob("*"):
         if not filepath.is_file():
             continue
         stat = filepath.stat()
@@ -28,6 +28,11 @@ def manifest():
             "size": stat.st_size,
             "mtime": int(stat.st_mtime),
         })
+
+    # Sort by mtime ascending — oldest files first, newest last.
+    # This ensures newest files appear on the last page of the embroidery
+    # machine's file browser (FAT directory entries are in creation order).
+    entries.sort(key=lambda e: e["mtime"])
 
     logger.info("Manifest requested: %d files", len(entries))
     return JSONResponse(content=entries)
