@@ -70,7 +70,7 @@ void mqtt_app_start(void)
     esp_mqtt_client_config_t mqtt_cfg = {
         .broker.address.uri = uri,
         .credentials.username = username,
-        .credentials.password = password,
+        .credentials.authentication.password = password,
         .credentials.client_id = MQTT_CLIENT_ID,
     };
 
