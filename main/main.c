@@ -11,6 +11,7 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "nvs_flash.h"
+#include "esp_sntp.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "led_strip.h"
@@ -157,7 +158,13 @@ void app_main(void)
 
     debug_flash(255, 0, 255);     // MAGENTA = WiFi done, about to init MQTT
 
-    // 7. Start MQTT (will post EVENT_MQTT_CONNECTED when broker connects)
+    // 7. Start SNTP for accurate timestamps (used by last_synced sensor in HA)
+    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_init();
+    ESP_LOGI(TAG, "SNTP started");
+
+    // 8. Start MQTT (will post EVENT_MQTT_CONNECTED when broker connects)
     mqtt_app_start();
     ESP_LOGI(TAG, "Initialization complete — state machine running");
 }

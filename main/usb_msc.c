@@ -123,11 +123,16 @@ esp_err_t usb_msc_mount_for_sync(void)
 
     esp_err_t ret = tinyusb_msc_storage_mount(SD_MOUNT_POINT);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "VFS mount failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "VFS mount failed: %s — cannot sync", esp_err_to_name(ret));
+        // Mount failed — post SYNC_FAILED so the state machine doesn't get stuck
+        // waiting for an UNMOUNT_COMPLETE that will never come.
+        state_machine_post_event(EVENT_SYNC_FAILED);
+        return ret;
     }
 
+    // Mount succeeded — VFS is ready for sync
     state_machine_post_event(EVENT_UNMOUNT_COMPLETE);
-    return ret;
+    return ESP_OK;
 }
 
 esp_err_t usb_msc_unmount_sync(void)

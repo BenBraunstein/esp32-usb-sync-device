@@ -70,6 +70,12 @@
 #define MQTT_TOPIC_SYNC     "embroidery/sync"
 #define MQTT_TOPIC_FORCE    "embroidery/force_sync"
 #define MQTT_TOPIC_STATUS   "embroidery/status"
+#define MQTT_TOPIC_LAST_SYNC "embroidery/last_synced"
+
+// Home Assistant MQTT Discovery
+#define HA_DISCOVERY_PREFIX "homeassistant"
+#define HA_DEVICE_ID        "embroidery_sync"
+#define HA_DEVICE_NAME      "Embroidery Sync Device"
 
 // ---------------------------------------------------------------------------
 // Sync Behavior

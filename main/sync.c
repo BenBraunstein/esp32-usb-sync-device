@@ -225,8 +225,11 @@ static esp_err_t http_get_to_file(const char *url, const char *filepath)
 
 // ---- main sync logic -------------------------------------------------------
 
-esp_err_t sync_run(void)
+esp_err_t sync_run(sync_result_t *result)
 {
+    // Initialize result counters
+    sync_result_t local_result = {0};
+
     // Verify VFS mount point is accessible
     struct stat mount_st;
     if (stat(SD_MOUNT_POINT, &mount_st) != 0) {
@@ -266,12 +269,8 @@ esp_err_t sync_run(void)
         return ESP_FAIL;
     }
 
-    int total_files = cJSON_GetArraySize(root);
-    int downloaded = 0;
-    int skipped = 0;
-    int errors = 0;
-
-    ESP_LOGI(TAG, "Manifest has %d files", total_files);
+    local_result.total = cJSON_GetArraySize(root);
+    ESP_LOGI(TAG, "Manifest has %d files", local_result.total);
 
     // 3. Process each entry
     cJSON *entry;
@@ -294,7 +293,7 @@ esp_err_t sync_run(void)
         // Check if file exists and matches size
         struct stat st;
         if (stat(full_path, &st) == 0 && (size_t)st.st_size == expected_size) {
-            skipped++;
+            local_result.skipped++;
             continue;
         }
 
@@ -302,7 +301,7 @@ esp_err_t sync_run(void)
         char encoded_path[512];
         if (url_encode_path(rel_path, encoded_path, sizeof(encoded_path)) < 0) {
             ESP_LOGE(TAG, "Path too long to encode: %s", rel_path);
-            errors++;
+            local_result.errors++;
             continue;
         }
 
@@ -314,13 +313,13 @@ esp_err_t sync_run(void)
 
         esp_err_t err = http_get_to_file(file_url, full_path);
         if (err == ESP_OK) {
-            downloaded++;
+            local_result.downloaded++;
         } else {
             ESP_LOGE(TAG, "Failed to download %s", rel_path);
-            errors++;
+            local_result.errors++;
             // Stop after 3 errors to keep output manageable
-            if (errors >= 3) {
-                ESP_LOGW(TAG, "Stopping sync early after %d errors", errors);
+            if (local_result.errors >= 3) {
+                ESP_LOGW(TAG, "Stopping sync early after %d errors", local_result.errors);
                 break;
             }
         }
@@ -332,9 +331,14 @@ esp_err_t sync_run(void)
     char status_msg[128];
     snprintf(status_msg, sizeof(status_msg),
              "sync complete: %d downloaded, %d skipped, %d errors",
-             downloaded, skipped, errors);
+             local_result.downloaded, local_result.skipped, local_result.errors);
     ESP_LOGI(TAG, "%s", status_msg);
     mqtt_publish_status(status_msg);
 
-    return (errors > 0) ? ESP_FAIL : ESP_OK;
+    // Return result to caller if requested
+    if (result) {
+        *result = local_result;
+    }
+
+    return (local_result.errors > 0) ? ESP_FAIL : ESP_OK;
 }

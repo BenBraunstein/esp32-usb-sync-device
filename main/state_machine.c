@@ -19,9 +19,11 @@ static _Atomic device_state_t s_state = STATE_IDLE;
 static bool s_wifi_connected;
 static bool s_mqtt_connected;
 static bool s_pending_sync;
+static bool s_boot_sync_done;   // true after the first boot sync has been triggered
 static int  s_retry_count;
 static TimerHandle_t s_retry_timer;
 static TimerHandle_t s_debounce_timer;
+static TimerHandle_t s_boot_sync_timer; // delays boot sync to let USB host enumerate
 
 // ---- helpers ---------------------------------------------------------------
 
@@ -98,6 +100,17 @@ static void debounce_timer_cb(TimerHandle_t timer)
     }
 }
 
+static void boot_sync_timer_cb(TimerHandle_t timer)
+{
+    // Delayed boot sync — fires 5 seconds after first mount to give the USB
+    // host time to fully enumerate the drive before we take it back for sync.
+    device_state_t st = atomic_load(&s_state);
+    if (st == STATE_MOUNTED) {
+        ESP_LOGI(TAG, "Boot sync timer fired, triggering initial sync");
+        state_machine_post_event(EVENT_SYNC_REQUESTED);
+    }
+}
+
 // ---- event handler ---------------------------------------------------------
 
 static void handle_event(state_event_t event)
@@ -125,6 +138,13 @@ static void handle_event(state_event_t event)
     case STATE_MOUNTING:
         if (event == EVENT_MOUNT_COMPLETE) {
             enter_state(STATE_MOUNTED);
+            // Auto-sync on first boot — start a 5-second timer to give the
+            // USB host time to fully enumerate the drive before we take it back.
+            if (!s_boot_sync_done) {
+                s_boot_sync_done = true;
+                ESP_LOGI(TAG, "Boot sync: scheduling initial sync in 5s");
+                xTimerStart(s_boot_sync_timer, 0);
+            }
         }
         break;
 
@@ -141,7 +161,11 @@ static void handle_event(state_event_t event)
         if (event == EVENT_UNMOUNT_COMPLETE) {
             // VFS is now mounted for local access — run sync
             enter_state(STATE_SYNCING);
-            esp_err_t err = sync_run();
+            sync_result_t sync_result = {0};
+            esp_err_t err = sync_run(&sync_result);
+            // Always publish last_synced — even if all files were skipped
+            mqtt_publish_last_synced(sync_result.total, sync_result.downloaded,
+                                     sync_result.skipped, sync_result.errors);
             if (err == ESP_OK) {
                 state_machine_post_event(EVENT_SYNC_COMPLETE);
             } else {
@@ -184,15 +208,19 @@ static void handle_event(state_event_t event)
     case STATE_ERROR:
         // Retry timer posts SYNC_REQUESTED — VFS should still be mounted from
         // the previous sync attempt, so we can retry directly.
-        if (event == EVENT_SYNC_REQUESTED) {
+        if (event == EVENT_SYNC_REQUESTED || event == EVENT_FORCE_SYNC) {
             // Re-mount VFS in case it was lost (idempotent if already mounted)
             esp_err_t mount_err = tinyusb_msc_storage_mount(SD_MOUNT_POINT);
             if (mount_err != ESP_OK) {
                 ESP_LOGW(TAG, "VFS re-mount returned %s (may already be mounted)",
                          esp_err_to_name(mount_err));
             }
+            if (event == EVENT_FORCE_SYNC) s_retry_count = 0;
             enter_state(STATE_SYNCING);
-            esp_err_t err = sync_run();
+            sync_result_t sync_result = {0};
+            esp_err_t err = sync_run(&sync_result);
+            mqtt_publish_last_synced(sync_result.total, sync_result.downloaded,
+                                     sync_result.skipped, sync_result.errors);
             if (err == ESP_OK) {
                 state_machine_post_event(EVENT_SYNC_COMPLETE);
             } else {
@@ -206,17 +234,6 @@ static void handle_event(state_event_t event)
             vTaskDelay(pdMS_TO_TICKS(350));
             enter_state(STATE_MOUNTING);
             usb_msc_expose_to_host();
-        }
-        // Allow force_sync from error state too
-        if (event == EVENT_FORCE_SYNC) {
-            s_retry_count = 0;
-            enter_state(STATE_SYNCING);
-            esp_err_t err = sync_run();
-            if (err == ESP_OK) {
-                state_machine_post_event(EVENT_SYNC_COMPLETE);
-            } else {
-                state_machine_post_event(EVENT_SYNC_FAILED);
-            }
         }
         break;
     }
@@ -245,6 +262,9 @@ void state_machine_init(void)
                                  pdFALSE, NULL, retry_timer_cb);
     s_debounce_timer = xTimerCreate("debounce", pdMS_TO_TICKS(SYNC_DEBOUNCE_MS),
                                     pdFALSE, NULL, debounce_timer_cb);
+    // 5-second one-shot timer — fires once after first mount to trigger boot sync
+    s_boot_sync_timer = xTimerCreate("boot_sync", pdMS_TO_TICKS(5000),
+                                     pdFALSE, NULL, boot_sync_timer_cb);
 
     xTaskCreate(state_machine_task, "state_machine", 16384, NULL, 5, NULL);
     ESP_LOGI(TAG, "State machine started");
