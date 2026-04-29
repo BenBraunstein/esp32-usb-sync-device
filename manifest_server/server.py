@@ -12,14 +12,27 @@ ROOT_DIR = Path(os.environ.get("EMBROIDERY_ROOT", "/data"))
 
 
 @app.get("/manifest.json")
-def manifest():
-    """Return a JSON array of all files with relative path, size, and mtime."""
+def manifest(ext: str | None = None):
+    """Return a JSON array of all files with relative path, size, and mtime.
+
+    Optional `ext` query param is a comma-separated list of file extensions
+    to include (e.g. `?ext=pes,dst`). Leading dots and case are ignored.
+    """
     if not ROOT_DIR.is_dir():
         raise HTTPException(status_code=500, detail=f"Root directory not found: {ROOT_DIR}")
+
+    allowed = None
+    if ext:
+        allowed = {e.strip().lstrip(".").lower() for e in ext.split(",")}
+        allowed.discard("")
+        if not allowed:
+            allowed = None
 
     entries = []
     for filepath in ROOT_DIR.rglob("*"):
         if not filepath.is_file():
+            continue
+        if allowed is not None and filepath.suffix.lstrip(".").lower() not in allowed:
             continue
         stat = filepath.stat()
         rel = filepath.relative_to(ROOT_DIR).as_posix()
@@ -34,7 +47,7 @@ def manifest():
     # machine's file browser (FAT directory entries are in creation order).
     entries.sort(key=lambda e: e["mtime"])
 
-    logger.info("Manifest requested: %d files", len(entries))
+    logger.info("Manifest requested: %d files (ext filter: %s)", len(entries), allowed or "none")
     return JSONResponse(content=entries)
 
 

@@ -243,7 +243,8 @@ esp_err_t sync_run(void)
     // 1. Fetch manifest
     char manifest_url[128];
     snprintf(manifest_url, sizeof(manifest_url),
-             "http://%s:%s/manifest.json", server_ip, server_port);
+             "http://%s:%s/manifest.json?ext=%s",
+             server_ip, server_port, MANIFEST_EXT_FILTER);
 
     ESP_LOGI(TAG, "Fetching manifest from %s", manifest_url);
 

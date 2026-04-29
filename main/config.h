@@ -78,6 +78,10 @@
 #define RETRY_DELAY_MS      10000
 #define SYNC_DEBOUNCE_MS    2000
 
+#ifndef MANIFEST_EXT_FILTER
+#define MANIFEST_EXT_FILTER "pes"
+#endif
+
 // ---------------------------------------------------------------------------
 // SD Card
 // ---------------------------------------------------------------------------
